@@ -159,7 +159,7 @@ export default function confirmChanges(pi: ExtensionAPI) {
 		}
 
 		if (isToolCallEventType("bash", event)) {
-			const decision = decideBash(event.input.command, rules);
+			const decision = decideBash(event.input.command, rules.bash);
 
 			if (decision === "allow") return undefined;
 			if (decision === "deny") return { block: true, reason: "Command denied by operations.json" };
