@@ -38,7 +38,7 @@ This extension uses only event handlers (`pi.on("tool_call", ...)`), not `pi.reg
 
 ## Headless mode
 
-In non-interactive mode (CI, scripts, `--mode json`), all operations are blocked by default since there is no UI to prompt for approval.
+In non-interactive mode (CI, scripts, `--mode json`), operations that would normally prompt for approval are blocked since there is no UI. However, `"allow"` and `"deny"` rules still apply — allowed bash commands and explicitly allowed write/edit operations pass through without prompting. Only operations requiring user confirmation are blocked.
 
 ## Configuration
 

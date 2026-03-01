@@ -1,6 +1,6 @@
 {
   "name": "pi-confirm-changes",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Pi extension that intercepts file-modifying tool calls and bash commands for approval",
   "type": "module",
   "keywords": [

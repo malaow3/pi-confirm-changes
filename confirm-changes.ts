@@ -9,7 +9,9 @@
  * Rules are loaded once on startup and refreshed on /reload.
  * If operations.json is missing, all bash commands require approval.
  *
- * In non-interactive (headless) mode, all operations are blocked.
+ * In non-interactive (headless) mode, operations that require prompting
+ * are blocked. Operations with "allow" or "deny" rules still apply.
+ * Allowed bash commands pass through; unrecognized ones are blocked.
  *
  * Pattern matching is prefix-based with word boundaries:
  *   "rm"       → matches rm, rm -rf, rm file (but not rmdir)
@@ -55,15 +57,24 @@ function parseFilePermission(value: unknown): FilePermission {
 	return "ask";
 }
 
+function parseStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((item): item is string => typeof item === "string");
+}
+
 function loadRules(): Rules {
 	const defaults: Rules = { write: "ask", edit: "ask", bash: { allow: [], deny: [] } };
 	try {
 		const raw = readFileSync(OPS_PATH, "utf-8");
 		const parsed = JSON.parse(raw);
+		const bash = parsed.bash && typeof parsed.bash === "object" ? parsed.bash : {};
 		return {
 			write: parseFilePermission(parsed.write),
 			edit: parseFilePermission(parsed.edit),
-			bash: { ...defaults.bash, ...parsed.bash },
+			bash: {
+				allow: parseStringArray(bash.allow),
+				deny: parseStringArray(bash.deny),
+			},
 		};
 	} catch {
 		return defaults;
@@ -103,9 +114,7 @@ function matchesPrefix(subCommand: string, pattern: string): boolean {
 	return subCommand === prefix || subCommand.startsWith(prefix + " ");
 }
 
-type Decision = "allow" | "deny" | "prompt";
-
-function decideBash(command: string, rules: BashRules): Decision {
+function decideBash(command: string, rules: BashRules): FilePermission {
 	const subs = extractSubCommands(command);
 	if (subs.length === 0) return "allow";
 
@@ -116,57 +125,45 @@ function decideBash(command: string, rules: BashRules): Decision {
 		if (!rules.allow.some((p) => matchesPrefix(sub, p))) allAllowed = false;
 	}
 
-	return allAllowed ? "allow" : "prompt";
+	return allAllowed ? "allow" : "ask";
 }
 
-// ── Prompt helpers ──────────────────────────────────────────────────
+// ── Gate ─────────────────────────────────────────────────────────────
 
-async function promptUser(ui: ExtensionUIContext, header: string): Promise<"approve" | "reject" | "skip"> {
-	const choice = await ui.select(header, ["Approve", "Reject", "Skip"]);
-	if (choice === "Approve") return "approve";
-	if (choice === "Skip") return "skip";
-	return "reject"; // Reject selected or Escape pressed
+type BlockResult = { block: true; reason: string };
+const REJECTED = "User rejected this change. Stop and ask the user what they want instead.";
+const SKIPPED = "User skipped this operation. Continue with the next step.";
+
+async function gate(
+	permission: FilePermission,
+	label: string,
+	ctx: { hasUI: boolean; ui: ExtensionUIContext },
+): Promise<undefined | BlockResult> {
+	if (permission === "allow") return undefined;
+	if (permission === "deny") return { block: true, reason: `${label} denied by operations.json` };
+	if (!ctx.hasUI) return { block: true, reason: `${label} blocked (no UI for confirmation)` };
+
+	const choice = await ctx.ui.select(label, ["Approve", "Reject", "Skip"]);
+	if (choice === "Approve") return undefined;
+	return { block: true, reason: choice === "Skip" ? SKIPPED : REJECTED };
 }
 
 // ── Extension ───────────────────────────────────────────────────────
-
-const NO_UI = "Operation blocked (no UI available for confirmation)";
-const REJECTED = "User rejected this change. Stop and ask the user what they want instead.";
-const SKIPPED = "User skipped this operation. Continue with the next step.";
 
 export default function confirmChanges(pi: ExtensionAPI) {
 	const rules = loadRules();
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (!ctx.hasUI) {
-			return { block: true, reason: NO_UI };
-		}
-
 		if (isToolCallEventType("write", event)) {
-			if (rules.write === "allow") return undefined;
-			if (rules.write === "deny") return { block: true, reason: "Write operations denied by operations.json" };
-			const result = await promptUser(ctx.ui, `Write: ${event.input.path}`);
-			if (result === "approve") return undefined;
-			return { block: true, reason: result === "reject" ? REJECTED : SKIPPED };
+			return gate(rules.write, `Write: ${event.input.path}`, ctx);
 		}
 
 		if (isToolCallEventType("edit", event)) {
-			if (rules.edit === "allow") return undefined;
-			if (rules.edit === "deny") return { block: true, reason: "Edit operations denied by operations.json" };
-			const result = await promptUser(ctx.ui, `Edit: ${event.input.path}`);
-			if (result === "approve") return undefined;
-			return { block: true, reason: result === "reject" ? REJECTED : SKIPPED };
+			return gate(rules.edit, `Edit: ${event.input.path}`, ctx);
 		}
 
 		if (isToolCallEventType("bash", event)) {
-			const decision = decideBash(event.input.command, rules.bash);
-
-			if (decision === "allow") return undefined;
-			if (decision === "deny") return { block: true, reason: "Command denied by operations.json" };
-
-			const result = await promptUser(ctx.ui, `Bash: ${event.input.command}`);
-			if (result === "approve") return undefined;
-			return { block: true, reason: result === "reject" ? REJECTED : SKIPPED };
+			return gate(decideBash(event.input.command, rules.bash), `Bash: ${event.input.command}`, ctx);
 		}
 
 		return undefined;
