@@ -1,0 +1,31 @@
+{
+  "name": "pi-confirm-changes",
+  "version": "1.0.0",
+  "description": "Pi extension that intercepts file-modifying tool calls and bash commands for approval",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "confirm",
+    "approve",
+    "permissions"
+  ],
+  "license": "MIT",
+  "files": [
+    "confirm-changes.ts",
+    "operations.json",
+    "package.json",
+    "README.md"
+  ],
+  "dependencies": {
+    "shell-quote": "^1.8.3"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./confirm-changes.ts"
+    ]
+  }
+}

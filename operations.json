@@ -1,0 +1,33 @@
+{
+  "bash": {
+    "allow": [
+      "ls",
+      "cat",
+      "head",
+      "tail",
+      "grep",
+      "rg",
+      "find",
+      "echo",
+      "pwd",
+      "which",
+      "wc",
+      "file",
+      "du",
+      "df",
+      "stat",
+      "readlink",
+      "realpath",
+      "git status",
+      "git log",
+      "git diff",
+      "git branch",
+      "git show",
+      "node --version",
+      "npm --version",
+      "npm list",
+      "cd"
+    ],
+    "deny": []
+  }
+}
