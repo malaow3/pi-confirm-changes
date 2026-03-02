@@ -28,7 +28,7 @@
 import {
 	isToolCallEventType,
 	type ExtensionAPI,
-	type ExtensionUIContext,
+	type ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -137,7 +137,7 @@ const SKIPPED = "User skipped this operation. Continue with the next step.";
 async function gate(
 	permission: FilePermission,
 	label: string,
-	ctx: { hasUI: boolean; ui: ExtensionUIContext },
+	ctx: ExtensionContext,
 ): Promise<undefined | BlockResult> {
 	if (permission === "allow") return undefined;
 	if (permission === "deny") return { block: true, reason: `${label} denied by operations.json` };
@@ -145,7 +145,11 @@ async function gate(
 
 	const choice = await ctx.ui.select(label, ["Approve", "Reject", "Skip"]);
 	if (choice === "Approve") return undefined;
-	return { block: true, reason: choice === "Skip" ? SKIPPED : REJECTED };
+	if (choice === "Reject") {
+		ctx.abort();
+		return { block: true, reason: REJECTED };
+	}
+	return { block: true, reason: SKIPPED };
 }
 
 // ── Extension ───────────────────────────────────────────────────────
