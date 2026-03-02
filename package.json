@@ -27,5 +27,9 @@
     "extensions": [
       "./confirm-changes.ts"
     ]
+  },
+  "devDependencies": {
+    "@types/shell-quote": "^1.7.5",
+    "typescript": "^5.9.3"
   }
 }
