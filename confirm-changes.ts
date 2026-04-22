@@ -9,6 +9,11 @@
  * Rules are loaded once on startup and refreshed on /reload.
  * If operations.json is missing, all bash commands require approval.
  *
+ * Auto-confirm mode: set `"autoApprove": true` in operations.json, or
+ * toggle at runtime via `/auto-confirm [on|off|status]`. When enabled,
+ * all write/edit/bash operations are auto-approved — except those that
+ * match an explicit `deny` rule, which are still blocked.
+ *
  * In non-interactive (headless) mode, operations that require prompting
  * are blocked. Operations with "allow" or "deny" rules still apply.
  * Allowed bash commands pass through; unrecognized ones are blocked.
@@ -48,6 +53,7 @@ interface Rules {
 	write: FilePermission;
 	edit: FilePermission;
 	bash: BashRules;
+	autoApprove: boolean;
 }
 
 const OPS_PATH = join(homedir(), ".pi", "agent", "operations.json");
@@ -63,7 +69,7 @@ function parseStringArray(value: unknown): string[] {
 }
 
 function loadRules(): Rules {
-	const defaults: Rules = { write: "ask", edit: "ask", bash: { allow: [], deny: [] } };
+	const defaults: Rules = { write: "ask", edit: "ask", bash: { allow: [], deny: [] }, autoApprove: false };
 	try {
 		const raw = readFileSync(OPS_PATH, "utf-8");
 		const parsed = JSON.parse(raw);
@@ -75,6 +81,7 @@ function loadRules(): Rules {
 				allow: parseStringArray(bash.allow),
 				deny: parseStringArray(bash.deny),
 			},
+			autoApprove: parsed.autoApprove === true,
 		};
 	} catch {
 		return defaults;
@@ -145,13 +152,24 @@ async function gate(
 	permission: FilePermission,
 	label: string,
 	ctx: ExtensionContext,
+	enableAutoApprove: () => void,
 ): Promise<undefined | BlockResult> {
 	if (permission === "allow") return undefined;
 	if (permission === "deny") return { block: true, reason: `${label} denied by operations.json` };
 	if (!ctx.hasUI) return { block: true, reason: `${label} blocked (no UI for confirmation)` };
 
-	const choice = await ctx.ui.select(label, ["Approve", "Skip", "Reject & ask me"]);
+	const APPROVE_ALL = "Approve & auto-confirm all from now on";
+	const choice = await ctx.ui.select(label, [
+		"Approve",
+		APPROVE_ALL,
+		"Skip",
+		"Reject & ask me",
+	]);
 	if (choice === "Approve") return undefined;
+	if (choice === APPROVE_ALL) {
+		enableAutoApprove();
+		return undefined;
+	}
 	if (choice === "Skip") return { block: true, reason: SKIPPED };
 	// "Reject & ask me" or Escape — stop and ask the user
 	ctx.abort();
@@ -162,18 +180,67 @@ async function gate(
 
 export default function confirmChanges(pi: ExtensionAPI) {
 	const rules = loadRules();
+	// Runtime override — toggled via /auto-confirm. Initial value seeded from
+	// operations.json's `autoApprove` flag. When true, all write/edit/bash
+	// operations are auto-approved (except those explicitly denied).
+	let autoApprove = rules.autoApprove;
+
+	type NotifyCtx = { ui: { notify: (message: string, type?: "warning" | "info" | "error") => void } };
+	const setAutoApprove = (value: boolean, ctx?: NotifyCtx) => {
+		autoApprove = value;
+		ctx?.ui.notify(
+			`Auto-confirm is ${autoApprove ? "ON — all edits/writes/bash auto-approved" : "OFF — confirmations enabled"}`,
+			autoApprove ? "warning" : "info",
+		);
+	};
+
+	pi.registerShortcut("ctrl+shift+y", {
+		description: "Toggle auto-confirm (YOLO) mode for edits/writes/bash",
+		handler: async (ctx) => {
+			setAutoApprove(!autoApprove, ctx);
+		},
+	});
+
+	pi.registerCommand("auto-confirm", {
+		description: "Toggle auto-approve of all edits/writes/bash (YOLO mode)",
+		getArgumentCompletions: (prefix: string) => {
+			const items = [
+				{ value: "on", label: "on — auto-approve everything" },
+				{ value: "off", label: "off — prompt for confirmation" },
+				{ value: "status", label: "status — show current mode" },
+			];
+			const filtered = items.filter((i) => i.value.startsWith(prefix));
+			return filtered.length > 0 ? filtered : null;
+		},
+		handler: async (args, ctx) => {
+			const arg = (args ?? "").trim().toLowerCase();
+			let next = autoApprove;
+			if (arg === "on" || arg === "true" || arg === "enable") next = true;
+			else if (arg === "off" || arg === "false" || arg === "disable") next = false;
+			else if (arg === "status") next = autoApprove;
+			else next = !autoApprove;
+			setAutoApprove(next, ctx);
+		},
+	});
+
+	const enableFromMenu = () => setAutoApprove(true);
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (isToolCallEventType("write", event)) {
-			return gate(rules.write, `Write: ${event.input.path}`, ctx);
+			const perm = autoApprove && rules.write !== "deny" ? "allow" : rules.write;
+			return gate(perm, `Write: ${event.input.path}`, ctx, enableFromMenu);
 		}
 
 		if (isToolCallEventType("edit", event)) {
-			return gate(rules.edit, `Edit: ${event.input.path}`, ctx);
+			const perm = autoApprove && rules.edit !== "deny" ? "allow" : rules.edit;
+			return gate(perm, `Edit: ${event.input.path}`, ctx, enableFromMenu);
 		}
 
 		if (isToolCallEventType("bash", event)) {
-			return gate(decideBash(event.input.command, rules.bash), `Approve bash command?`, ctx);
+			const decided = decideBash(event.input.command, rules.bash);
+			// Auto-approve never overrides an explicit deny
+			const perm = autoApprove && decided !== "deny" ? "allow" : decided;
+			return gate(perm, `Approve bash command?`, ctx, enableFromMenu);
 		}
 
 		return undefined;
